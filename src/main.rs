@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 
-// Helper to determine the default file extension representation for files 
+// Helper to determine the default file extension representation for files
 // without an extension (like 'start' in the example).
 const NO_EXTENSION_PLACEHOLDER: &str = ":";
 
@@ -15,8 +15,8 @@ fn run_file_sorter() -> Result<(), Box<dyn std::error::Error>> {
     // Print the directory being scanned for context.
     println!("Scanning directory: {}\n", current_dir.display());
 
-    // Use a BTreeMap to store results. This map automatically keeps the keys 
-    // (file extensions) sorted alphabetically, ensuring the final output 
+    // Use a BTreeMap to store results. This map automatically keeps the keys
+    // (file extensions) sorted alphabetically, ensuring the final output
     // is organized as requested.
     let mut files_by_extension: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
@@ -29,23 +29,22 @@ fn run_file_sorter() -> Result<(), Box<dyn std::error::Error>> {
         if path.is_file() {
             // Extract the filename as a string.
             if let Some(filename) = path.file_name().and_then(|s| s.to_str()) {
-                
                 // Skip files that start with '.' (hidden files) for cleaner output.
                 if filename.starts_with('.') {
-                    continue; 
+                    continue;
                 }
 
                 // 4. Determine the file extension.
                 let extension = match path.extension().and_then(|ext| ext.to_str()) {
                     // If an extension exists, convert it to lowercase for grouping.
-                    Some(ext) => ext.to_lowercase(), 
+                    Some(ext) => ext.to_lowercase(),
                     // If no extension, use the defined placeholder (':').
-                    None => NO_EXTENSION_PLACEHOLDER.to_string(), 
+                    None => NO_EXTENSION_PLACEHOLDER.to_string(),
                 };
 
                 // Get the file name (e.g., "document.pdf" -> "document.pdf")
                 let filename_only = filename.to_string();
-                
+
                 // 5. Insert the filename into the correct extension group.
                 // .entry(key).or_default() gets the Vec<String> for the extension
                 // or creates a new one if it doesn't exist.
@@ -59,7 +58,7 @@ fn run_file_sorter() -> Result<(), Box<dyn std::error::Error>> {
 
     // 6. Print the results.
     for (extension, filenames) in files_by_extension {
-        // Since BTreeMap iterates in sorted key order (by extension), we only 
+        // Since BTreeMap iterates in sorted key order (by extension), we only
         // need to sort the filenames within each group.
         let mut sorted_filenames = filenames;
         sorted_filenames.sort_unstable(); // Use unstable sort for efficiency
@@ -79,7 +78,7 @@ fn run_file_sorter() -> Result<(), Box<dyn std::error::Error>> {
 
 fn main() {
     match run_file_sorter() {
-        Ok(()) => {},
+        Ok(()) => {}
         Err(e) => {
             // Print errors to stderr and exit with a non-zero status code.
             eprintln!("An error occurred: {e}");
