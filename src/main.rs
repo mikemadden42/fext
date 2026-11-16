@@ -1,88 +1,163 @@
 use std::collections::BTreeMap;
 use std::env;
+use std::fmt;
 use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
-// Helper to determine the default file extension representation for files
-// without an extension (like 'start' in the example).
-const NO_EXTENSION_PLACEHOLDER: &str = ":";
+const USAGE: &str = "usage: fext [DIR]";
 
-/// Lists files in the current directory and groups them by their file extension.
-/// It ignores directories and hidden files (starting with '.').
-fn run_file_sorter() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Get the current working directory path.
-    let current_dir = env::current_dir()?;
-
-    // Print the directory being scanned for context.
-    println!("Scanning directory: {}\n", current_dir.display());
-
-    // Use a BTreeMap to store results. This map automatically keeps the keys
-    // (file extensions) sorted alphabetically, ensuring the final output
-    // is organized as requested.
-    let mut files_by_extension: BTreeMap<String, Vec<String>> = BTreeMap::new();
-
-    // 2. Iterate over the entries in the current directory.
-    for entry in fs::read_dir(&current_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        // 3. Process only regular files.
-        if path.is_file() {
-            // Extract the filename as a string.
-            if let Some(filename) = path.file_name().and_then(|s| s.to_str()) {
-                // Skip files that start with '.' (hidden files) for cleaner output.
-                if filename.starts_with('.') {
-                    continue;
-                }
-
-                // 4. Determine the file extension.
-                let extension = match path.extension().and_then(|ext| ext.to_str()) {
-                    // If an extension exists, convert it to lowercase for grouping.
-                    Some(ext) => ext.to_lowercase(),
-                    // If no extension, use the defined placeholder (':').
-                    None => NO_EXTENSION_PLACEHOLDER.to_string(),
-                };
-
-                // Get the file name (e.g., "document.pdf" -> "document.pdf")
-                let filename_only = filename.to_string();
-
-                // 5. Insert the filename into the correct extension group.
-                // .entry(key).or_default() gets the Vec<String> for the extension
-                // or creates a new one if it doesn't exist.
-                files_by_extension
-                    .entry(extension)
-                    .or_default()
-                    .push(filename_only);
-            }
-        }
-    }
-
-    // 6. Print the results.
-    for (extension, filenames) in files_by_extension {
-        // Since BTreeMap iterates in sorted key order (by extension), we only
-        // need to sort the filenames within each group.
-        let mut sorted_filenames = filenames;
-        sorted_filenames.sort_unstable(); // Use unstable sort for efficiency
-
-        // Print the extension header (e.g., "pdf:").
-        println!("{extension}:");
-
-        // Print the list of files.
-        for filename in sorted_filenames {
-            println!("- {filename}");
-        }
-        println!(); // Add a blank line for clean separation between groups.
-    }
-
-    Ok(())
+/// Grouping key for a file. `Missing` sorts before any `Named` extension, so
+/// files without an extension are listed first.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Extension {
+    Missing,
+    Named(String),
 }
 
-fn main() {
-    match run_file_sorter() {
-        Ok(()) => {}
-        Err(e) => {
-            // Print errors to stderr and exit with a non-zero status code.
-            eprintln!("An error occurred: {e}");
-            std::process::exit(1);
+impl fmt::Display for Extension {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Extension::Missing => f.write_str("(none)"),
+            Extension::Named(ext) => f.write_str(ext),
         }
+    }
+}
+
+/// Returns the lowercased extension of `name`. A trailing dot (`"file."`)
+/// counts as no extension.
+fn extension_of(name: &str) -> Extension {
+    match Path::new(name).extension() {
+        Some(ext) if !ext.is_empty() => Extension::Named(ext.to_string_lossy().to_lowercase()),
+        _ => Extension::Missing,
+    }
+}
+
+/// Groups file names by extension, skipping hidden files. Names within each
+/// group are sorted case-insensitively.
+fn group_by_extension<I>(names: I) -> BTreeMap<Extension, Vec<String>>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut groups: BTreeMap<Extension, Vec<String>> = BTreeMap::new();
+    for name in names {
+        if name.starts_with('.') {
+            continue;
+        }
+        groups.entry(extension_of(&name)).or_default().push(name);
+    }
+    for names in groups.values_mut() {
+        names.sort_by_cached_key(|name| (name.to_lowercase(), name.clone()));
+    }
+    groups
+}
+
+/// Lists the names of regular files in `dir`, including symlinks to files.
+/// Names that aren't valid UTF-8 are converted lossily; broken symlinks are
+/// reported on stderr and skipped.
+fn list_files(dir: &Path) -> Result<Vec<String>, String> {
+    let read_error = |e| format!("cannot read {}: {e}", dir.display());
+    let mut names = Vec::new();
+    for entry in fs::read_dir(dir).map_err(read_error)? {
+        let entry = entry.map_err(read_error)?;
+        let path = entry.path();
+        if path.is_file() {
+            names.push(entry.file_name().to_string_lossy().into_owned());
+        } else if path.is_symlink() && !path.exists() {
+            eprintln!("fext: skipping broken symlink {}", path.display());
+        }
+    }
+    Ok(names)
+}
+
+fn print_groups(groups: &BTreeMap<Extension, Vec<String>>) {
+    for (extension, names) in groups {
+        println!("{extension}:");
+        for name in names {
+            println!("- {name}");
+        }
+        println!();
+    }
+}
+
+fn main() -> ExitCode {
+    let mut args = env::args_os().skip(1);
+    let dir = match (args.next(), args.next()) {
+        (None, _) => PathBuf::from("."),
+        (Some(arg), None) if arg == "-h" || arg == "--help" => {
+            println!("{USAGE}");
+            return ExitCode::SUCCESS;
+        }
+        (Some(arg), None) => PathBuf::from(arg),
+        (Some(_), Some(_)) => {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+
+    match list_files(&dir) {
+        Ok(names) => {
+            print_groups(&group_by_extension(names));
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("fext: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn named(ext: &str) -> Extension {
+        Extension::Named(ext.to_string())
+    }
+
+    fn group(names: &[&str]) -> Vec<(Extension, Vec<String>)> {
+        group_by_extension(names.iter().map(|n| n.to_string()))
+            .into_iter()
+            .collect()
+    }
+
+    #[test]
+    fn extension_is_lowercased() {
+        assert_eq!(extension_of("a.TXT"), named("txt"));
+    }
+
+    #[test]
+    fn last_extension_wins() {
+        assert_eq!(extension_of("x.tar.gz"), named("gz"));
+    }
+
+    #[test]
+    fn no_extension_and_trailing_dot_are_missing() {
+        assert_eq!(extension_of("Makefile"), Extension::Missing);
+        assert_eq!(extension_of("trailing."), Extension::Missing);
+    }
+
+    #[test]
+    fn missing_extension_header() {
+        assert_eq!(Extension::Missing.to_string(), "(none)");
+    }
+
+    #[test]
+    fn missing_group_comes_first() {
+        let groups = group(&["b.txt", "7z.7z", "Makefile", "trailing."]);
+        let keys: Vec<_> = groups.iter().map(|(k, _)| k).collect();
+        assert_eq!(keys, [&Extension::Missing, &named("7z"), &named("txt")]);
+        assert_eq!(groups[0].1, ["Makefile", "trailing."]);
+    }
+
+    #[test]
+    fn hidden_files_are_skipped() {
+        assert!(group(&[".hidden", ".config.toml"]).is_empty());
+    }
+
+    #[test]
+    fn names_sort_case_insensitively() {
+        let groups = group(&["b.txt", "README.txt", "a.TXT"]);
+        assert_eq!(groups[0].1, ["a.TXT", "b.txt", "README.txt"]);
     }
 }
